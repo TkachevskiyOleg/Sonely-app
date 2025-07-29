@@ -1,13 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { login as loginApi, register as registerApi } from '../services/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
 
 interface User {
   id: string;
   email: string;
   name?: string;
   avatar?: string;
-  // Додаткові поля користувача можна додати тут
 }
 
 interface AuthContextType {
@@ -19,6 +20,15 @@ interface AuthContextType {
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
+  handleOAuthLogin: (provider: 'google' | 'apple') => Promise<void>;
+  refreshToken: () => Promise<void>;
+}
+
+// Додайте цей інтерфейс для параметрів redirect URI
+interface RedirectUriOptions {
+    native?: string;
+    useProxy?: boolean;
+    path?: string;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -37,7 +47,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Завантаження збережених даних аутентифікації при старті додатка
+  // Завантаження даних при старті
   useEffect(() => {
     const loadAuthData = async () => {
       try {
@@ -61,6 +71,63 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     loadAuthData();
   }, []);
 
+  // Оновлення токена
+  const refreshToken = async () => {
+    try {
+      const response = await fetch(`${process.env.API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) throw new Error('Token refresh failed');
+
+      const { token: newToken } = await response.json();
+      await AsyncStorage.setItem('authToken', newToken);
+      setToken(newToken);
+    } catch (e) {
+      console.error('Token refresh error:', e);
+      await logout();
+    }
+  };
+
+  // Обробник OAuth
+  const handleOAuthLogin = async (provider: 'google' | 'apple') => {
+    try {
+        setLoading(true);
+        setError(null);
+        
+        // Виправлений рядок - використовуємо правильний тип для параметрів
+        const redirectUri = AuthSession.makeRedirectUri({
+            useProxy: true,
+        } as RedirectUriOptions);
+        
+        const authUrl = `${process.env.API_URL}/auth/${provider}?redirect_uri=${encodeURIComponent(redirectUri)}`;
+        
+        const result = await WebBrowser.openAuthSessionAsync(
+            authUrl,
+            redirectUri
+        );
+
+        if (result.type === 'success') {
+            const { token: authToken, user: authUser } = JSON.parse(result.url.split('#')[1]);
+            await Promise.all([
+                AsyncStorage.setItem('authToken', authToken),
+                AsyncStorage.setItem('authUser', JSON.stringify(authUser)),
+            ]);
+            setToken(authToken);
+            setUser(authUser);
+        }
+    } catch (e: any) {
+        setError(e.message || 'OAuth login failed');
+    } finally {
+        setLoading(false);
+    }
+};
+
+  // Логін
   const login = async (email: string, password: string) => {
     setLoading(true);
     setError(null);
@@ -83,6 +150,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Реєстрація
   const register = async (email: string, password: string) => {
     setLoading(true);
     setError(null);
@@ -105,6 +173,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Логаут
   const logout = async () => {
     try {
       await Promise.all([
@@ -133,6 +202,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     register,
     logout,
     clearError,
+    handleOAuthLogin,
+    refreshToken,
   };
 
   return (
